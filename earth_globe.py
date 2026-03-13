@@ -46,19 +46,28 @@ def create_virtual_globe():
         coastlines.points *= 1.01
 
     # 4. 设置可视化界面
-    plotter = pv.Plotter(title="Python 3D 虚拟地形仪 (纯地貌+轮廓模式)")
-    plotter.set_background("black") # 太空背景
+    # 彻底解决重绘残留（Ghosting/Not erasing）的核心策略：
+    # 1. 禁用多重采样（硬件 MSAA 在某些 GPU 上会导致深度缓冲清除失败）
+    # 2. 移除背景图渲染器（Background Image Renderer），因为它是残留的最常见来源
+    # 3. 使用 SSAA（超采样抗锯齿）替代 FXAA，SSAA 会强制刷新整个渲染表面
+    pv.global_theme.multi_samples = 0
+    plotter = pv.Plotter(
+        title="Python 3D 虚拟地形仪 (纯地貌+轮廓模式)",
+        lighting='light_kit'
+    )
+    plotter.enable_anti_aliasing('ssaa') # 使用更彻底的 SSAA 抗锯齿
+    plotter.set_background("black") # 纯黑背景，确保擦除干净
 
     # 添加地形网格：使用 'terrain' 色带根据海拔着色
-    # 该色带会自动将海洋显示为蓝色，陆地显示为绿/褐/白色
     earth_mesh = plotter.add_mesh(
         topo, 
         scalars='altitude', 
         cmap="terrain", 
         smooth_shading=True, 
         name="earth",
+        clim=[-8000, 8848],
         show_scalar_bar=True,
-        scalar_bar_args={'title': '海拔 (m)'}
+        scalar_bar_args={'title': '海拔 (m)', 'n_labels': 5}
     )
 
     # 添加大洲轮廓线
@@ -72,12 +81,8 @@ def create_virtual_globe():
             name="coastlines"
         )
 
-    # 5. 添加背景星空
-    try:
-        stars = examples.planets.download_stars_sky_background()
-        plotter.add_background_image(stars)
-    except:
-        pass
+    # 5. 移除星空背景图（它是产生重绘残留的主要原因）
+    # 如果您需要星空，我们可以稍后用点云（Points）来实现
 
     # 6. 交互逻辑与说明
     def toggle_coastlines():
