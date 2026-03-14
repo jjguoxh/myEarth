@@ -145,16 +145,22 @@ def create_shenzhen_sandbox(dem_path=None, satellite_path=None, api_key=None):
     sz_geojson = fetch_shenzhen_geojson(full=True)
     border_poly = parse_geojson_to_polydata(sz_geojson)
 
-    # 2. 获取地形数据 (优先从 OpenTopography 下载)
+    # 2. 获取地形数据 (优先从本地或 OpenTopography 获取)
     elevation, spacing, origin = None, None, None
-    if api_key:
-        dem_file = fetch_opentopography_dem(SZ_BBOX, api_key)
+    dem_file = "shenzhen_dem.tif"
+    
+    # 检查本地是否已有数据，或者是否有 API Key 可以下载
+    if os.path.exists(dem_file):
+        print(f"直接从本地读取地形数据: {dem_file}")
+        elevation, spacing, origin = load_dem_to_grid(dem_file)
+    elif api_key:
+        dem_file = fetch_opentopography_dem(SZ_BBOX, api_key, output_path=dem_file)
         if dem_file:
             elevation, spacing, origin = load_dem_to_grid(dem_file)
 
-    # 如果没有 API Key 或下载失败，使用模拟地形
+    # 如果既没有本地文件，也没有 API Key，则使用模拟地形
     if elevation is None:
-        print("未检测到真实 DEM 数据，正在生成模拟地形 (经纬度范围: 深圳全境)...")
+        print("未检测到本地数据且未提供 API Key，正在生成模拟地形...")
         nx, ny = 500, 300
         lon = np.linspace(SZ_BBOX[1], SZ_BBOX[3], nx)
         lat = np.linspace(SZ_BBOX[0], SZ_BBOX[2], ny)
@@ -178,14 +184,23 @@ def create_shenzhen_sandbox(dem_path=None, satellite_path=None, api_key=None):
     plotter.set_background("#1a1a1a")
 
     # 5. 地形位移 (Warping)
-    # 比例因子调整：对于真实地理单位，warp 可能需要较大或较小的值
-    warp_factor = 0.0001 if api_key else 0.1 # 真实海拔单位(m) vs 经纬度单位
-    terrain_mesh = grid.warp_by_scalar("Elevation", factor=warp_factor)
+    # 核心：物理比例校正
+    # 水平单位是度 (degree)，垂直单位是米 (meter)
+    # 1度纬度约等于 111,320米。为了实现 1:1 物理比例，
+    # 转换因子应为 1 / 111320.0
+    DEGREE_TO_METERS = 111320.0
+    base_warp = 1.0 / DEGREE_TO_METERS
+    
+    # 如果是模拟数据，其高度已经是 0~1 的模拟值，不需要这么小的缩放
+    if elevation.max() < 10: # 模拟数据的 z 值通常很小
+        base_warp = 0.1
+        
+    terrain_mesh = grid.warp_by_scalar("Elevation", factor=base_warp)
     
     # 6. 添加边界线
     if border_poly:
-        # 将边界线稍微抬高
-        border_poly.points[:, 2] = elevation.max() * warp_factor * 1.1
+        # 将边界线固定在海拔 0 位置
+        border_poly.points[:, 2] = 0
         plotter.add_mesh(border_poly, color="yellow", line_width=2, name="border", label="深圳市行政区划")
 
     # 7. 应用贴图
@@ -198,19 +213,17 @@ def create_shenzhen_sandbox(dem_path=None, satellite_path=None, api_key=None):
 
     # 8. 滑杆控件：调节地形夸张比例
     def update_warp(value):
-        # 动态调节
-        factor = value * (0.0001 if api_key else 0.1)
+        # value=1.0 时为真实比例 (1:1)
+        factor = value * base_warp
         new_mesh = grid.warp_by_scalar("Elevation", factor=factor)
         terrain_mesh.points[:] = new_mesh.points
-        if border_poly:
-            border_poly.points[:, 2] = elevation.max() * factor * 1.1
         plotter.render()
 
     plotter.add_slider_widget(
         callback=update_warp,
-        rng=[0.0, 5.0],
+        rng=[1.0, 100.0], # 按照用户要求，将范围扩展为 1 到 100
         value=1.0,
-        title="地形夸张比例",
+        title="地形夸张比例 (1:N)",
         pointa=(0.7, 0.1),
         pointb=(0.95, 0.1),
         style='modern'
