@@ -214,7 +214,7 @@ def create_virtual_globe():
 
     # 5.5 高亮图层
     highlight_actor = None
-    plotter.add_text("", position='upper_left', font_size=12, color='yellow', name="country_label")
+    plotter.add_text("", position='upper_right', font_size=12, color='yellow', name="country_label")
     
     # 6. 滑杆回调函数：调节地形夸张比例
     def update_exaggeration(value):
@@ -271,7 +271,7 @@ def create_virtual_globe():
             if cid != -1:
                 name = country_names.get(cid, "Unknown")
                 # 更新文本
-                plotter.add_text(f"当前国家: {name}", position='upper_left', font_size=12, color='yellow', name="country_label")
+                plotter.add_text(f"当前国家: {name}", position='upper_right', font_size=12, color='yellow', name="country_label")
                 
                 mask = borders.cell_data['country_id'] == cid
                 selected_border = borders.extract_cells(mask)
@@ -280,7 +280,7 @@ def create_virtual_globe():
                     plotter.remove_actor(highlight_actor)
                 highlight_actor = plotter.add_mesh(selected_border, color="yellow", line_width=4, name="highlight", pickable=False)
             else:
-                plotter.add_text("", position='upper_left', font_size=12, color='yellow', name="country_label")
+                plotter.add_text("", position='upper_right', font_size=12, color='yellow', name="country_label")
                 if highlight_actor:
                     plotter.remove_actor(highlight_actor)
                     highlight_actor = None
