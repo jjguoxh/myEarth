@@ -4,6 +4,7 @@ from pyvista import examples
 import sys
 import json
 import requests
+import time
 
 def download_world_borders():
     url = "https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json"
@@ -235,7 +236,8 @@ def create_virtual_globe():
         plotter.render()
 
     # 6.5 国家悬浮高亮逻辑
-    state = {'active_id': -1}
+    state = {'active_id': -1, 'is_dragging': False, 'last_hover_t': 0.0}
+    hover_interval = 0.06
     
     # 使用 CellPicker 以获取面索引
     import vtk
@@ -244,6 +246,12 @@ def create_virtual_globe():
     
     def on_mouse_move(_obj, _event):
         nonlocal highlight_actor
+        if state['is_dragging']:
+            return
+        now = time.perf_counter()
+        if now - state['last_hover_t'] < hover_interval:
+            return
+        state['last_hover_t'] = now
         click_pos = plotter.iren.get_event_position()
         cell_picker.Pick(click_pos[0], click_pos[1], 0, plotter.renderer)
         picked_actor = cell_picker.GetActor()
@@ -286,8 +294,35 @@ def create_virtual_globe():
                     highlight_actor = None
             plotter.render()
 
+    def on_left_press(_obj, _event):
+        state['is_dragging'] = True
+
+    def on_left_release(_obj, _event):
+        state['is_dragging'] = False
+        state['last_hover_t'] = 0.0
+
+    def on_right_press(_obj, _event):
+        state['is_dragging'] = True
+
+    def on_right_release(_obj, _event):
+        state['is_dragging'] = False
+        state['last_hover_t'] = 0.0
+
+    def on_middle_press(_obj, _event):
+        state['is_dragging'] = True
+
+    def on_middle_release(_obj, _event):
+        state['is_dragging'] = False
+        state['last_hover_t'] = 0.0
+
     # 绑定鼠标移动事件
     plotter.iren.add_observer("MouseMoveEvent", on_mouse_move)
+    plotter.iren.add_observer("LeftButtonPressEvent", on_left_press)
+    plotter.iren.add_observer("LeftButtonReleaseEvent", on_left_release)
+    plotter.iren.add_observer("RightButtonPressEvent", on_right_press)
+    plotter.iren.add_observer("RightButtonReleaseEvent", on_right_release)
+    plotter.iren.add_observer("MiddleButtonPressEvent", on_middle_press)
+    plotter.iren.add_observer("MiddleButtonReleaseEvent", on_middle_release)
 
     # 添加滑杆控件
     plotter.add_slider_widget(
