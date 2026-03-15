@@ -5,13 +5,34 @@ import sys
 import json
 import requests
 import time
+import os
+
+CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
+
+
+def _ensure_cache_dir():
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _cache_path(filename):
+    _ensure_cache_dir()
+    return os.path.join(CACHE_DIR, filename)
 
 def download_world_borders():
+    cache_file = _cache_path("countries.geo.json")
     url = "https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json"
-    print(f"正在从 {url} 下载全球国界线数据...")
     try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
+        if os.path.exists(cache_file):
+            print(f"从缓存加载全球国界线: {cache_file}")
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            print(f"正在从 {url} 下载全球国界线数据...")
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
 
         all_pts = []
         border_cells = []
@@ -163,24 +184,43 @@ def _point_in_country(lon, lat, polygons):
 
 def create_virtual_globe():
     print("正在加载地球地形数据和轮廓...")
+    _ensure_cache_dir()
     
     # 1. 加载地形网格
+    topo_cache = _cache_path("topo_global.vtp")
     try:
-        topo = examples.download_topo_global()
+        if os.path.exists(topo_cache):
+            print(f"从缓存加载地形网格: {topo_cache}")
+            topo = pv.read(topo_cache)
+        else:
+            topo = examples.download_topo_global()
+            topo.save(topo_cache)
     except Exception as e:
         print(f"下载地形数据失败: {e}")
         topo = pv.Sphere(radius=1.0, theta_resolution=120, phi_resolution=120)
         topo.point_data['altitude'] = np.zeros(topo.n_points)
 
     # 2. 加载地表贴图、海岸线和国界线
+    texture_cache = _cache_path("globe_texture.png")
     try:
-        texture = examples.load_globe_texture()
+        if os.path.exists(texture_cache):
+            print(f"从缓存加载地表贴图: {texture_cache}")
+            texture = pv.read_texture(texture_cache)
+        else:
+            texture = examples.load_globe_texture()
+            texture.to_image().save(texture_cache)
     except Exception as e:
         print(f"加载贴图失败: {e}")
         texture = None
 
+    coast_cache = _cache_path("coastlines.vtp")
     try:
-        coastlines = examples.download_coastlines()
+        if os.path.exists(coast_cache):
+            print(f"从缓存加载海岸线: {coast_cache}")
+            coastlines = pv.read(coast_cache)
+        else:
+            coastlines = examples.download_coastlines()
+            coastlines.save(coast_cache)
     except Exception as e:
         print(f"加载海岸线失败: {e}")
         coastlines = None
@@ -211,7 +251,7 @@ def create_virtual_globe():
     # 5. 设置可视化界面
     pv.global_theme.multi_samples = 0
     plotter = pv.Plotter(title="Python 3D 虚拟地球仪 - 国家高亮交互")
-    plotter.enable_anti_aliasing('ssaa')
+    plotter.enable_anti_aliasing('fxaa')
     plotter.set_background("black")
 
     # 初始添加模型
@@ -253,7 +293,7 @@ def create_virtual_globe():
 
     # 6.5 国家悬浮高亮逻辑
     state = {'active_id': -1, 'is_dragging': False, 'last_hover_t': 0.0}
-    hover_interval = 0.06
+    hover_interval = 0.12
     
     # 使用 CellPicker 以获取面索引
     import vtk
@@ -311,25 +351,46 @@ def create_virtual_globe():
             plotter.render()
 
     def on_left_press(_obj, _event):
+        nonlocal highlight_actor
         state['is_dragging'] = True
+        if highlight_actor:
+            plotter.remove_actor(highlight_actor)
+            highlight_actor = None
+        plotter.add_text("", position='upper_right', font_size=12, color='yellow', name="country_label")
+        plotter.render()
 
     def on_left_release(_obj, _event):
         state['is_dragging'] = False
         state['last_hover_t'] = 0.0
+        plotter.render()
 
     def on_right_press(_obj, _event):
+        nonlocal highlight_actor
         state['is_dragging'] = True
+        if highlight_actor:
+            plotter.remove_actor(highlight_actor)
+            highlight_actor = None
+        plotter.add_text("", position='upper_right', font_size=12, color='yellow', name="country_label")
+        plotter.render()
 
     def on_right_release(_obj, _event):
         state['is_dragging'] = False
         state['last_hover_t'] = 0.0
+        plotter.render()
 
     def on_middle_press(_obj, _event):
+        nonlocal highlight_actor
         state['is_dragging'] = True
+        if highlight_actor:
+            plotter.remove_actor(highlight_actor)
+            highlight_actor = None
+        plotter.add_text("", position='upper_right', font_size=12, color='yellow', name="country_label")
+        plotter.render()
 
     def on_middle_release(_obj, _event):
         state['is_dragging'] = False
         state['last_hover_t'] = 0.0
+        plotter.render()
 
     # 绑定鼠标移动事件
     plotter.iren.add_observer("MouseMoveEvent", on_mouse_move)
