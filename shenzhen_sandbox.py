@@ -213,15 +213,19 @@ def create_shenzhen_sandbox(dem_path=None, satellite_path=None, api_key=None):
 
     # 8. 滑杆控件：调节地形夸张比例
     def update_warp(value):
-        # value=1.0 时为真实比例 (1:1)
+        # 基础换算比例：1米海拔 = 1/111320度
         factor = value * base_warp
-        new_mesh = grid.warp_by_scalar("Elevation", factor=factor)
-        terrain_mesh.points[:] = new_mesh.points
+        
+        # 直接更新网格顶点的 Z 坐标，这是最快且最可靠的方法
+        # elevation 是 2D 数组，其拉平后的顺序与 ImageData/StructuredGrid 顶点顺序一致 (C-order)
+        terrain_mesh.points[:, 2] = elevation.flatten(order="C") * factor
+        
+        # 强制更新
         plotter.render()
 
     plotter.add_slider_widget(
         callback=update_warp,
-        rng=[1.0, 100.0], # 按照用户要求，将范围扩展为 1 到 100
+        rng=[1.0, 100.0], # 将范围限制在用户要求的 1 到 100
         value=1.0,
         title="地形夸张比例 (1:N)",
         pointa=(0.7, 0.1),

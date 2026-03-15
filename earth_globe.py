@@ -6,55 +6,143 @@ import json
 import requests
 
 def download_world_borders():
-    """下载并解析全球国界线 GeoJSON 数据"""
     url = "https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json"
     print(f"正在从 {url} 下载全球国界线数据...")
     try:
         response = requests.get(url, timeout=10)
         data = response.json()
-        
-        all_lines_pts = []
-        all_lines_cells = []
+
+        all_pts = []
+        border_cells = []
+        country_ids_borders = []
+        country_names = {}
+        country_geoms = {}
         curr_pt_idx = 0
-        
-        for feature in data['features']:
+
+        for idx, feature in enumerate(data['features']):
+            name = feature['properties'].get('name', f"Country {idx}")
+            country_names[idx] = name
+            country_geoms[idx] = []
+
             geom = feature['geometry']
             coords = geom['coordinates']
-            
-            # 处理 Polygon 和 MultiPolygon
             polys = [coords] if geom['type'] == 'Polygon' else coords
-            
+
             for poly in polys:
+                rings_for_country = []
                 for ring in poly:
-                    # ring 是 [[lon1, lat1], [lon2, lat2], ...]
+                    if len(ring) < 3:
+                        continue
+                    ring_arr = np.asarray(ring, dtype=float)
+                    rings_for_country.append(ring_arr)
+
                     ring_pts = []
                     for lon, lat in ring:
-                        # 转换为弧度
                         phi = np.deg2rad(lat)
                         theta = np.deg2rad(lon)
-                        # 转换为 3D 笛卡尔坐标 (半径为 1.0)
                         x = np.cos(phi) * np.cos(theta)
                         y = np.cos(phi) * np.sin(theta)
                         z = np.sin(phi)
                         ring_pts.append([x, y, z])
-                    
+
                     num_pts = len(ring_pts)
-                    if num_pts < 2: continue
-                    
-                    all_lines_pts.extend(ring_pts)
-                    # 定义线条单元: [n_pts, i1, i2, ..., in]
-                    cell = [num_pts] + list(range(curr_pt_idx, curr_pt_idx + num_pts))
-                    all_lines_cells.append(cell)
+                    if num_pts < 2:
+                        continue
+
+                    all_pts.extend(ring_pts)
+                    line_cell = [num_pts] + list(range(curr_pt_idx, curr_pt_idx + num_pts))
+                    border_cells.append(line_cell)
+                    country_ids_borders.append(idx)
                     curr_pt_idx += num_pts
-                    
-        if not all_lines_pts:
-            return None
-            
-        borders = pv.PolyData(np.array(all_lines_pts), lines=np.hstack(all_lines_cells))
-        return borders
+
+                if rings_for_country:
+                    outer = rings_for_country[0]
+                    holes = rings_for_country[1:]
+                    min_lon = float(np.min(outer[:, 0]))
+                    max_lon = float(np.max(outer[:, 0]))
+                    min_lat = float(np.min(outer[:, 1]))
+                    max_lat = float(np.max(outer[:, 1]))
+                    country_geoms[idx].append(
+                        {
+                            "outer": outer,
+                            "holes": holes,
+                            "bbox": (min_lon, max_lon, min_lat, max_lat),
+                            "crosses_dateline": (max_lon - min_lon) > 180.0,
+                        }
+                    )
+
+        if not all_pts:
+            return None, {}, {}
+
+        pts_array = np.array(all_pts)
+        borders = pv.PolyData(pts_array, lines=np.hstack(border_cells))
+        borders.cell_data['country_id'] = np.array(country_ids_borders)
+        return borders, country_names, country_geoms
     except Exception as e:
         print(f"加载国界线数据失败: {e}")
-        return None
+        return None, {}, {}
+
+
+def _point_in_ring(lon, lat, ring):
+    inside = False
+    n = len(ring)
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i][0], ring[i][1]
+        xj, yj = ring[j][0], ring[j][1]
+        intersects = ((yi > lat) != (yj > lat)) and (
+            lon < (xj - xi) * (lat - yi) / ((yj - yi) + 1e-12) + xi
+        )
+        if intersects:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _normalize_lon(lon):
+    v = ((lon + 180.0) % 360.0) - 180.0
+    return 180.0 if v == -180.0 else v
+
+
+def _point_in_country(lon, lat, polygons):
+    lon = _normalize_lon(lon)
+    for poly in polygons:
+        min_lon, max_lon, min_lat, max_lat = poly["bbox"]
+        test_lon = lon
+        outer = poly["outer"]
+        holes = poly["holes"]
+
+        if poly["crosses_dateline"]:
+            if test_lon < 0:
+                test_lon += 360.0
+            outer_test = outer.copy()
+            outer_test[:, 0] = np.where(outer_test[:, 0] < 0, outer_test[:, 0] + 360.0, outer_test[:, 0])
+            if not (np.min(outer_test[:, 0]) <= test_lon <= np.max(outer_test[:, 0]) and min_lat <= lat <= max_lat):
+                continue
+            if not _point_in_ring(test_lon, lat, outer_test):
+                continue
+            in_hole = False
+            for hole in holes:
+                hole_test = hole.copy()
+                hole_test[:, 0] = np.where(hole_test[:, 0] < 0, hole_test[:, 0] + 360.0, hole_test[:, 0])
+                if _point_in_ring(test_lon, lat, hole_test):
+                    in_hole = True
+                    break
+            if not in_hole:
+                return True
+        else:
+            if not (min_lon <= test_lon <= max_lon and min_lat <= lat <= max_lat):
+                continue
+            if not _point_in_ring(test_lon, lat, outer):
+                continue
+            in_hole = False
+            for hole in holes:
+                if _point_in_ring(test_lon, lat, hole):
+                    in_hole = True
+                    break
+            if not in_hole:
+                return True
+    return False
 
 def create_virtual_globe():
     print("正在加载地球地形数据和轮廓...")
@@ -80,7 +168,7 @@ def create_virtual_globe():
         print(f"加载海岸线失败: {e}")
         coastlines = None
         
-    borders = download_world_borders()
+    borders, country_names, country_geoms = download_world_borders()
 
     # 3. 投影校正 (UV 映射)
     print("正在进行投影校正 (UV 映射)...")
@@ -105,7 +193,7 @@ def create_virtual_globe():
 
     # 5. 设置可视化界面
     pv.global_theme.multi_samples = 0
-    plotter = pv.Plotter(title="Python 3D 虚拟地形仪 - 交互式夸张比例")
+    plotter = pv.Plotter(title="Python 3D 虚拟地球仪 - 国家高亮交互")
     plotter.enable_anti_aliasing('ssaa')
     plotter.set_background("black")
 
@@ -124,24 +212,82 @@ def create_virtual_globe():
     if borders:
         borders_actor = plotter.add_mesh(borders, color="cyan", line_width=1, name="borders", label="国界线")
 
+    # 5.5 高亮图层
+    highlight_actor = None
+    plotter.add_text("", position='upper_left', font_size=12, color='yellow', name="country_label")
+    
     # 6. 滑杆回调函数：调节地形夸张比例
     def update_exaggeration(value):
         # value 范围 1.0 到 5.0
-        # 基础夸大倍数
         base_factor = 40.0
         current_factor = value * base_factor
         
         displacement = (scalars / 6371000.0) * current_factor
         topo.points = pts_orig + unit_vectors * displacement[:, np.newaxis]
         
-        # 轮廓线和国界线同步浮动，保持在地形上方
+        # 轮廓线和国界线同步浮动
         height_offset = 1.0 + (value * 0.005)
         if coastlines and coast_actor:
             coastlines.points = coast_pts_orig * height_offset
         if borders and borders_actor:
-            borders.points = borders_pts_orig * (height_offset + 0.001) # 略高于海岸线以防重叠
+            borders.points = borders_pts_orig * (height_offset + 0.001)
             
         plotter.render()
+
+    # 6.5 国家悬浮高亮逻辑
+    state = {'active_id': -1}
+    
+    # 使用 CellPicker 以获取面索引
+    import vtk
+    cell_picker = vtk.vtkCellPicker()
+    cell_picker.SetTolerance(0.005) # 设置拾取容差
+    
+    def on_mouse_move(_obj, _event):
+        nonlocal highlight_actor
+        click_pos = plotter.iren.get_event_position()
+        cell_picker.Pick(click_pos[0], click_pos[1], 0, plotter.renderer)
+        picked_actor = cell_picker.GetActor()
+        cid = -1
+        cell_id = cell_picker.GetCellId()
+        pick_pos = None
+        if picked_actor is not None and cell_id != -1:
+            pick_pos = np.array(cell_picker.GetPickPosition(), dtype=float)
+            norm = np.linalg.norm(pick_pos)
+            if norm > 0:
+                dir_vec = pick_pos / norm
+                lon = np.rad2deg(np.arctan2(dir_vec[1], dir_vec[0]))
+                lat = np.rad2deg(np.arcsin(np.clip(dir_vec[2], -1.0, 1.0)))
+                for country_id, polygons in country_geoms.items():
+                    if _point_in_country(lon, lat, polygons):
+                        cid = country_id
+                        break
+                if cid == -1 and borders is not None:
+                    nearest_cell = borders.find_closest_cell(pick_pos)
+                    if nearest_cell is not None and nearest_cell >= 0:
+                        cid = int(borders.cell_data['country_id'][nearest_cell])
+        
+        if cid != state['active_id']:
+            state['active_id'] = cid
+            if cid != -1:
+                name = country_names.get(cid, "Unknown")
+                # 更新文本
+                plotter.add_text(f"当前国家: {name}", position='upper_left', font_size=12, color='yellow', name="country_label")
+                
+                mask = borders.cell_data['country_id'] == cid
+                selected_border = borders.extract_cells(mask)
+                
+                if highlight_actor:
+                    plotter.remove_actor(highlight_actor)
+                highlight_actor = plotter.add_mesh(selected_border, color="yellow", line_width=4, name="highlight", pickable=False)
+            else:
+                plotter.add_text("", position='upper_left', font_size=12, color='yellow', name="country_label")
+                if highlight_actor:
+                    plotter.remove_actor(highlight_actor)
+                    highlight_actor = None
+            plotter.render()
+
+    # 绑定鼠标移动事件
+    plotter.iren.add_observer("MouseMoveEvent", on_mouse_move)
 
     # 添加滑杆控件
     plotter.add_slider_widget(
