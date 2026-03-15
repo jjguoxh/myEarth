@@ -20,10 +20,26 @@ def download_world_borders():
         country_geoms = {}
         curr_pt_idx = 0
 
+        # 预先找到 China 的 ID 以便合并
+        china_id = -1
+        for idx, feature in enumerate(data['features']):
+            if feature['properties'].get('name') == "China":
+                china_id = idx
+                break
+
         for idx, feature in enumerate(data['features']):
             name = feature['properties'].get('name', f"Country {idx}")
-            country_names[idx] = name
-            country_geoms[idx] = []
+            
+            # 如果是 Taiwan，则将其归类到 China 的 ID 下
+            is_taiwan = (name == "Taiwan")
+            target_id = china_id if is_taiwan else idx
+            
+            # 统一名称为 China
+            display_name = "China" if is_taiwan else name
+            country_names[idx] = display_name
+            
+            if target_id not in country_geoms:
+                country_geoms[target_id] = []
 
             geom = feature['geometry']
             coords = geom['coordinates']
@@ -53,7 +69,7 @@ def download_world_borders():
                     all_pts.extend(ring_pts)
                     line_cell = [num_pts] + list(range(curr_pt_idx, curr_pt_idx + num_pts))
                     border_cells.append(line_cell)
-                    country_ids_borders.append(idx)
+                    country_ids_borders.append(target_id)
                     curr_pt_idx += num_pts
 
                 if rings_for_country:
@@ -63,7 +79,7 @@ def download_world_borders():
                     max_lon = float(np.max(outer[:, 0]))
                     min_lat = float(np.min(outer[:, 1]))
                     max_lat = float(np.max(outer[:, 1]))
-                    country_geoms[idx].append(
+                    country_geoms[target_id].append(
                         {
                             "outer": outer,
                             "holes": holes,
